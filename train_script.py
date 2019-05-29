@@ -4,6 +4,7 @@ from fastai.vision.models.wrn import wrn_22
 from fastai.distributed import *
 from fastai.callbacks import *
 from models import *
+from time import time
 torch.backends.cudnn.benchmark = True
 
 # data 
@@ -28,13 +29,14 @@ def main(
     size:Param("Image size", int)=128,
     woof:Param("Imagewoof or Imageneette", int)=1,
     bs:Param("Batch size", int)=64,
-    lr:Param("learning rate", float)=3e-3,
+    lr:Param("learning rate", float)=1e-2,
     mixup:Param("Mixup beta", float)=None,
     epochs:Param("Number of epochs", int)=5,
     fp16:Param("fp16 or fp32", int)=0,
     label_smooth:Param("label smoothing or not", int)=0,
     arch_name:Param("Arch name", str)="xresnet18",
-    alpha_pool:Param("Alpha pool or concat pool", int)=0
+    alpha_pool:Param("Alpha pool or concat pool", int)=0,
+    logdir:Param("Alpha pool or concat pool", str)='exp1'
     ):
     """
     Single: python train_scipt.py --gpu=0 
@@ -47,29 +49,39 @@ def main(
     # data
     data = get_data(size, woof, bs, workers=workers)
     
-    # callbacks
+    # callbacks, log to distinct dir
+    experiment_str = f"""
+    size: {size}
+    woof: {woof}
+    bs: {bs}
+    lr: {lr}
+    mixup: {mixup}
+    epochs: {epochs}
+    fp16: {fp16}
+    label_smooth: {label_smooth}
+    arch_name: {arch_name}
+    alpha_pool: {alpha_pool}
+    """
+
     learn_callbacks = [TerminateOnNaNCallback()]
-    learn_callback_fns = [partial(EarlyStoppingCallback, monitor='accuracy', mode='max', patience=5),
-                          partial(SaveModelCallback, monitor='accuracy', mode='max', name='baseline'),
-                          partial(CSVLogger, filename=f'../logs/{arch_name}_alpha:{alpha_pool}')]
+    learn_callback_fns = [partial(CSVLogger, filename=f'./logs/{logdir}/{str(int(time()))}')]
 
     # model
     arch = arch_dict[arch_name]
     learn = cnn_learner(data=data, 
                         custom_head=custom_head if alpha_pool else None,
                         base_arch=arch,
-                        pretrained=False,   
-                        metrics=[accuracy],
-                        callbacks=learn_callbacks,
-                        callback_fns=learn_callback_fns)
+                        pretrained=False)
     m = learn.model; learn.destroy()
     
     # learn
     opt_func = partial(optim.Adam, betas=(0.9,0.99), eps=1e-6)
-    learn = (Learner(data, m, wd=1e-2, opt_func=opt_func,
+    learn = Learner(data, m, wd=1e-2, opt_func=opt_func,
             metrics=[accuracy], bn_wd=False, true_wd=True,
-            loss_func = LabelSmoothingCrossEntropy() if label_smooth else CrossEntropyFlat()))
-    
+            loss_func = LabelSmoothingCrossEntropy() if label_smooth else CrossEntropyFlat(),
+            callbacks=learn_callbacks,
+            callback_fns=learn_callback_fns)
+
     if n_gpus>0:
         if gpu is None: learn.model = nn.DataParallel(learn.model)
         else: learn.to_distributed(gpu)
@@ -79,4 +91,7 @@ def main(
     
     # fit
     learn.fit_one_cycle(epochs, lr, div_factor=10, pct_start=0.3)
-        
+
+    # save experiment details        
+    with open(f'{learn.path}/./logs/{logdir}/experiment.txt', 'w') as f:
+        f.write(experiment_str)
