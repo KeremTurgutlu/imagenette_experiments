@@ -2,6 +2,8 @@ from fastai.script import *
 from fastai.vision import *
 from fastai.vision.models.wrn import wrn_22
 from fastai.distributed import *
+from fastai.callbacks import *
+from models import *
 torch.backends.cudnn.benchmark = True
 
 # data 
@@ -26,27 +28,51 @@ def main(
     size:Param("Image size", int)=128,
     woof:Param("Imagewoof or Imageneette", int)=1,
     bs:Param("Batch size", int)=64,
+    lr:Param("learning rate", float)=3e-3,
     mixup:Param("Mixup beta", float)=None,
     epochs:Param("Number of epochs", int)=5,
     fp16:Param("fp16 or fp32", int)=0,
-     ):
+    label_smooth:Param("label smoothing or not", int)=0,
+    arch_name:Param("Arch name", str)="xresnet18",
+    alpha_pool:Param("Alpha pool or concat pool", int)=0
+    ):
     """
-    Single: python -gpu=0 train_scipt.py
+    Single: python train_scipt.py --gpu=0 
     Distributed: python fastai/launch.py --gpus=1234567 train_script.py
     """
-    gpu = setup_distrib(gpu)
     n_gpus = num_distrib()
-    workers = min(16, num_cpus()//n_gpus)
+    if n_gpus>0: gpu = setup_distrib(gpu)
+    workers = min(16, num_cpus()//n_gpus) if n_gpus>0 else num_cpus()
 
     # data
-    get_data(size, woof, bs, workers=workers)
-
-    # learn
-    learn = (Learner(data, m, wd=1e-2, opt_func=opt_func, metrics=[accuracy],
-             bn_wd=False, true_wd=True, loss_func = LabelSmoothingCrossEntropy()))
+    data = get_data(size, woof, bs, workers=workers)
     
-    if gpu is None: learn.model = nn.DataParallel(learn.model)
-    else: learn.to_distributed(gpu)
+    # callbacks
+    learn_callbacks = [TerminateOnNaNCallback()]
+    learn_callback_fns = [partial(EarlyStoppingCallback, monitor='accuracy', mode='max', patience=5),
+                          partial(SaveModelCallback, monitor='accuracy', mode='max', name='baseline'),
+                          partial(CSVLogger, filename=f'../logs/{arch_name}_alpha:{alpha_pool}')]
+
+    # model
+    arch = arch_dict[arch_name]
+    learn = cnn_learner(data=data, 
+                        custom_head=custom_head if alpha_pool else None,
+                        base_arch=arch,
+                        pretrained=False,   
+                        metrics=[accuracy],
+                        callbacks=learn_callbacks,
+                        callback_fns=learn_callback_fns)
+    m = learn.model; learn.destroy()
+    
+    # learn
+    opt_func = partial(optim.Adam, betas=(0.9,0.99), eps=1e-6)
+    learn = (Learner(data, m, wd=1e-2, opt_func=opt_func,
+            metrics=[accuracy], bn_wd=False, true_wd=True,
+            loss_func = LabelSmoothingCrossEntropy() if label_smooth else CrossEntropyFlat()))
+    
+    if n_gpus>0:
+        if gpu is None: learn.model = nn.DataParallel(learn.model)
+        else: learn.to_distributed(gpu)
 
     if fp16: learn.to_fp16()
     if mixup: learn.mixup(mixup)
