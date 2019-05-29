@@ -8,10 +8,15 @@ from time import time
 torch.backends.cudnn.benchmark = True
 
 # data 
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 def get_data(size, woof, bs, workers=None):
+    "Issue with URLs.IMAGEWOOF val and train"
     if   size<=128: path = URLs.IMAGEWOOF_160 if woof else URLs.IMAGENETTE_160
-    elif size<=224: path = URLs.IMAGEWOOF_320 if woof else URLs.IMAGENETTE_320
-    else          : path = URLs.IMAGEWOOF     if woof else URLs.IMAGENETTE
+    # elif size<=224: path = URLs.IMAGEWOOF_320 if woof else URLs.IMAGENETTE_320
+    else: path = URLs.IMAGEWOOF_320 if woof else URLs.IMAGENETTE_320
+    # else          : path = URLs.IMAGEWOOF     if woof else URLs.IMAGENETTE
     path = untar_data(path)
 
     n_gpus = num_distrib() or 1
